@@ -25,9 +25,8 @@ jobs:
 
       - name: Installer le SDK Android
         uses: android-actions/setup-android@v3
-
-      - name: Installer les composants Android requis
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        with:
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
       - name: Préparer Gradle
         uses: gradle/actions/setup-gradle@v4
