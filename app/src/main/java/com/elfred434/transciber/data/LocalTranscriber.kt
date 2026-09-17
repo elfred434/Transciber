@@ -103,21 +103,21 @@ class LocalTranscriber @Inject constructor(
             val offset = (safeFrame * pcm.channels + channel) * 2
             val low = pcm.bytes[offset].toInt() and 0xff
             val high = pcm.bytes[offset + 1].toInt()
-            total += (high shl 8) or low
+            total += ((high shl 8) or low)
         }
         return total / pcm.channels
     }
 
     private fun writeLeInt(output: FileOutputStream, value: Int) {
         output.write(value and 0xff)
-        output.write(value shr 8 and 0xff)
-        output.write(value shr 16 and 0xff)
-        output.write(value shr 24 and 0xff)
+        output.write((value shr 8) and 0xff)
+        output.write((value shr 16) and 0xff)
+        output.write((value shr 24) and 0xff)
     }
 
     private fun writeLeShort(output: FileOutputStream, value: Int) {
         output.write(value and 0xff)
-        output.write(value shr 8 and 0xff)
+        output.write((value shr 8) and 0xff)
     }
 
     private fun decodeToPcm(uri: Uri): PcmAudio {
@@ -185,7 +185,9 @@ class LocalTranscriber @Inject constructor(
                     }
                     outputIndex >= 0 -> {
                         codec.getOutputBuffer(outputIndex)?.let { buffer ->
-                            if (bufferInfo.size > 0 && bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
+                            if (bufferInfo.size > 0 &&
+                                (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                            ) {
                                 buffer.position(bufferInfo.offset)
                                 buffer.limit(bufferInfo.offset + bufferInfo.size)
                                 val bytes = ByteArray(bufferInfo.size)
@@ -193,7 +195,8 @@ class LocalTranscriber @Inject constructor(
                                 output.write(bytes)
                             }
                         }
-                        outputDone = bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                        outputDone =
+                            (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0
                         codec.releaseOutputBuffer(outputIndex, false)
                     }
                 }
