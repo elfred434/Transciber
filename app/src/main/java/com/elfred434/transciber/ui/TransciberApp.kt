@@ -1,8 +1,5 @@
 package com.elfred434.transciber.ui
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -72,7 +69,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import com.elfred434.transciber.domain.HistoryItem
 import com.elfred434.transciber.domain.MainUiState
 import com.elfred434.transciber.domain.ProcessingStatus
@@ -96,22 +92,6 @@ fun TransciberApp(viewModel: MainViewModel) {
         }
         viewModel.acceptAudio(uri)
     }
-    val microphonePermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) viewModel.transcribe()
-        else viewModel.showError("L'autorisation audio est nécessaire pour la reconnaissance hors ligne.")
-    }
-    val startTranscription = {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
-        ) {
-            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
-        } else {
-            viewModel.transcribe()
-        }
-    }
-
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         bottomBar = {
@@ -145,7 +125,7 @@ fun TransciberApp(viewModel: MainViewModel) {
                 state = state,
                 viewModel = viewModel,
                 onPickAudio = { picker.launch(arrayOf("audio/*")) },
-                onTranscribe = startTranscription,
+                onTranscribe = viewModel::transcribe,
                 modifier = Modifier.padding(padding)
             )
             AppTab.HISTORY -> HistoryScreen(

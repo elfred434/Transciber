@@ -1,223 +1,127 @@
 package com.elfred434.transciber.data
 
 import android.content.Context
-import android.content.Intent
 import android.media.AudioFormat
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
-import android.os.Build
-import android.os.ParcelFileDescriptor
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
-import android.os.Bundle
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.ffmpegkit.whisper.Whisper
+import dev.ffmpegkit.whisper.WhisperConfig
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlinx.coroutines.CoroutineScope
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 @Singleton
 class LocalTranscriber @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
-    suspend fun transcribe(uri: Uri): String {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            throw IOException("La transcription hors ligne nécessite Android 12 ou une version ultérieure.")
-        }
-        if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(context)) {
-            throw IOException("Le module de reconnaissance hors ligne n'est pas installé sur cet appareil.")
-        }
+    private val modelMutex = Mutex()
+    @Volatile private var model: dev.ffmpegkit.whisper.WhisperModel? = null
 
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            val pcm = withContext(Dispatchers.IO) { decodeToPcm(uri) }
-            recognizePcm(pcm)
-        } else {
-            recognizeLegacyAudioUri(uri)
+    suspend fun transcribe(uri: Uri): String = withContext(Dispatchers.IO) {
+        val wav = File.createTempFile("transciber-", ".wav", context.cacheDir)
+        try {
+            val pcm = decodeToPcm(uri)
+            writeWhisperWav(pcm, wav)
+            val loadedModel = loadModel()
+            Whisper.transcribe(
+                loadedModel,
+                wav.absolutePath,
+                WhisperConfig(
+                    language = "auto",
+                    translate = false,
+                    threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6),
+                    printTimestamps = false
+                )
+            ).text.trim().takeIf { it.isNotBlank() }
+                ?: throw IOException("Aucune parole détectée dans ce vocal.")
+        } finally {
+            wav.delete()
         }
     }
 
-    private suspend fun recognizePcm(audio: PcmAudio): String =
-        withContext(Dispatchers.Main.immediate) {
-            suspendCancellableCoroutine { continuation ->
-                val pipe = ParcelFileDescriptor.createPipe()
-                val input = pipe[0]
-                val output = pipe[1]
-                val recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-                var writer: Job? = null
-                var latestPartial = ""
-                var finished = false
+    private suspend fun loadModel(): dev.ffmpegkit.whisper.WhisperModel = modelMutex.withLock {
+        model ?: Whisper.loadModelFromAsset(context, MODEL_ASSET).also { model = it }
+    }
 
-                fun cleanup() {
-                    writer?.cancel()
-                    runCatching { input.close() }
-                    runCatching { output.close() }
-                    runCatching { recognizer.destroy() }
-                }
-
-                fun finish(result: Result<String>) {
-                    if (finished) return
-                    finished = true
-                    cleanup()
-                    result.fold(
-                        onSuccess = { text -> continuation.resume(text) },
-                        onFailure = { error -> continuation.resumeWithException(error) }
-                    )
-                }
-
-                val listener = object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) = Unit
-                    override fun onBeginningOfSpeech() = Unit
-                    override fun onRmsChanged(rmsdB: Float) = Unit
-                    override fun onBufferReceived(buffer: ByteArray?) = Unit
-                    override fun onEndOfSpeech() = Unit
-
-                    override fun onError(error: Int) {
-                        val message = if (latestPartial.isNotBlank()) {
-                            null
-                        } else {
-                            "La reconnaissance hors ligne a échoué (code $error). Vérifiez que le modèle de langue est installé."
-                        }
-                        if (message == null) finish(Result.success(latestPartial))
-                        else finish(Result.failure(IOException(message)))
-                    }
-
-                    override fun onResults(results: Bundle?) {
-                        val text = results
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                            ?.trim()
-                            .orEmpty()
-                        finish(
-                            if (text.isNotBlank()) Result.success(text)
-                            else Result.failure(IOException("Aucune parole détectée dans ce vocal."))
-                        )
-                    }
-
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        latestPartial = partialResults
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                            ?.trim()
-                            .orEmpty()
-                    }
-
-                    override fun onEvent(eventType: Int, params: Bundle?) = Unit
-                }
-
-                recognizer.setRecognitionListener(listener)
-                val intent = recognitionIntent().apply {
-                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE, input)
-                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, audio.channels)
-                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
-                    putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, audio.sampleRate)
-                }
-
-                continuation.invokeOnCancellation {
-                    cleanup()
-                }
-
-                try {
-                    recognizer.startListening(intent)
-                    writer = CoroutineScope(Dispatchers.IO).launch {
-                        runCatching {
-                            ParcelFileDescriptor.AutoCloseOutputStream(output).use { stream ->
-                                stream.write(audio.bytes)
-                            }
-                        }
-                    }
-                } catch (error: Throwable) {
-                    runCatching { output.close() }
-                    finish(Result.failure(error))
-                }
-            }
+    private fun writeWhisperWav(pcm: PcmAudio, destination: File) {
+        if (pcm.encoding != AudioFormat.ENCODING_PCM_16BIT) {
+            throw IOException("Le décodeur audio n'a pas produit du PCM 16 bits.")
+        }
+        if (pcm.sampleRate <= 0 || pcm.channels <= 0) {
+            throw IOException("Paramètres audio invalides.")
         }
 
-    @Suppress("DEPRECATION")
-    private suspend fun recognizeLegacyAudioUri(uri: Uri): String =
-        withContext(Dispatchers.Main.immediate) {
-            suspendCancellableCoroutine { continuation ->
-                val recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
-                var finished = false
-                var latestPartial = ""
+        val sourceFrames = pcm.bytes.size / (2 * pcm.channels)
+        if (sourceFrames == 0) throw IOException("Le fichier audio est vide.")
+        val targetFrames = (sourceFrames.toDouble() * TARGET_SAMPLE_RATE / pcm.sampleRate)
+            .roundToInt()
+            .coerceAtLeast(1)
+        val dataSize = targetFrames * 2
 
-                fun cleanup() {
-                    runCatching { recognizer.destroy() }
-                }
+        FileOutputStream(destination).use { output ->
+            output.write("RIFF".toByteArray(StandardCharsets.US_ASCII))
+            writeLeInt(output, 36 + dataSize)
+            output.write("WAVEfmt ".toByteArray(StandardCharsets.US_ASCII))
+            writeLeInt(output, 16)
+            writeLeShort(output, 1)
+            writeLeShort(output, 1)
+            writeLeInt(output, TARGET_SAMPLE_RATE)
+            writeLeInt(output, TARGET_SAMPLE_RATE * 2)
+            writeLeShort(output, 2)
+            writeLeShort(output, 16)
+            output.write("data".toByteArray(StandardCharsets.US_ASCII))
+            writeLeInt(output, dataSize)
 
-                fun finish(result: Result<String>) {
-                    if (finished) return
-                    finished = true
-                    cleanup()
-                    result.fold(
-                        onSuccess = { text -> continuation.resume(text) },
-                        onFailure = { error -> continuation.resumeWithException(error) }
-                    )
-                }
-
-                recognizer.setRecognitionListener(object : RecognitionListener {
-                    override fun onReadyForSpeech(params: Bundle?) = Unit
-                    override fun onBeginningOfSpeech() = Unit
-                    override fun onRmsChanged(rmsdB: Float) = Unit
-                    override fun onBufferReceived(buffer: ByteArray?) = Unit
-                    override fun onEndOfSpeech() = Unit
-                    override fun onError(error: Int) {
-                        if (latestPartial.isNotBlank()) finish(Result.success(latestPartial))
-                        else finish(Result.failure(IOException("La reconnaissance hors ligne a échoué (code $error).")))
-                    }
-                    override fun onResults(results: Bundle?) {
-                        val text = results
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                            ?.trim()
-                            .orEmpty()
-                        finish(
-                            if (text.isNotBlank()) Result.success(text)
-                            else Result.failure(IOException("Aucune parole détectée dans ce vocal."))
-                        )
-                    }
-                    override fun onPartialResults(partialResults: Bundle?) {
-                        latestPartial = partialResults
-                            ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            ?.firstOrNull()
-                            ?.trim()
-                            .orEmpty()
-                    }
-                    override fun onEvent(eventType: Int, params: Bundle?) = Unit
-                })
-
-                val intent = recognitionIntent().apply {
-                    putExtra(RecognizerIntent.EXTRA_AUDIO_INJECT_SOURCE, uri)
-                }
-                continuation.invokeOnCancellation { cleanup() }
-                try {
-                    recognizer.startListening(intent)
-                } catch (error: Throwable) {
-                    finish(Result.failure(error))
-                }
+            for (targetFrame in 0 until targetFrames) {
+                val sourcePosition = targetFrame.toDouble() * pcm.sampleRate / TARGET_SAMPLE_RATE
+                val firstFrame = sourcePosition.toInt().coerceIn(0, sourceFrames - 1)
+                val secondFrame = (firstFrame + 1).coerceAtMost(sourceFrames - 1)
+                val fraction = sourcePosition - firstFrame
+                val sample = (sampleAt(pcm, firstFrame) * (1.0 - fraction) +
+                    sampleAt(pcm, secondFrame) * fraction).roundToInt().coerceIn(-32768, 32767)
+                writeLeShort(output, sample)
             }
         }
+    }
 
-    private fun recognitionIntent() = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-        putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-        putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-        putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+    private fun sampleAt(pcm: PcmAudio, frame: Int): Int {
+        var total = 0
+        val safeFrame = frame.coerceIn(0, pcm.bytes.size / (2 * pcm.channels) - 1)
+        for (channel in 0 until pcm.channels) {
+            val offset = (safeFrame * pcm.channels + channel) * 2
+            val low = pcm.bytes[offset].toInt() and 0xff
+            val high = pcm.bytes[offset + 1].toInt()
+            total += (high shl 8) or low
+        }
+        return total / pcm.channels
+    }
+
+    private fun writeLeInt(output: FileOutputStream, value: Int) {
+        output.write(value and 0xff)
+        output.write(value shr 8 and 0xff)
+        output.write(value shr 16 and 0xff)
+        output.write(value shr 24 and 0xff)
+    }
+
+    private fun writeLeShort(output: FileOutputStream, value: Int) {
+        output.write(value and 0xff)
+        output.write(value shr 8 and 0xff)
     }
 
     private fun decodeToPcm(uri: Uri): PcmAudio {
-        val resolver = context.contentResolver
-        val source = resolver.openFileDescriptor(uri, "r")
+        val source = context.contentResolver.openFileDescriptor(uri, "r")
             ?: throw IOException("Impossible d'ouvrir le fichier audio.")
         val extractor = MediaExtractor()
         var codec: MediaCodec? = null
@@ -236,16 +140,9 @@ class LocalTranscriber @Inject constructor(
             val format = trackFormat ?: throw IOException("Aucune piste audio lisible n'a été trouvée.")
             val mime = format.getString(MediaFormat.KEY_MIME)
                 ?: throw IOException("Format audio inconnu.")
-            val fallbackRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            } else {
-                16_000
-            }
-            val fallbackChannels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                format.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-            } else {
-                1
-            }
+            var sampleRate = format.intOrDefault(MediaFormat.KEY_SAMPLE_RATE, 16_000)
+            var channels = format.intOrDefault(MediaFormat.KEY_CHANNEL_COUNT, 1)
+            var encoding = format.intOrDefault(MediaFormat.KEY_PCM_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
 
             extractor.selectTrack(trackIndex)
             codec = MediaCodec.createDecoderByType(mime)
@@ -254,8 +151,6 @@ class LocalTranscriber @Inject constructor(
 
             val output = ByteArrayOutputStream()
             val bufferInfo = MediaCodec.BufferInfo()
-            var sampleRate = fallbackRate
-            var channels = fallbackChannels
             var inputDone = false
             var outputDone = false
 
@@ -268,20 +163,12 @@ class LocalTranscriber @Inject constructor(
                         val sampleSize = extractor.readSampleData(inputBuffer, 0)
                         if (sampleSize < 0) {
                             codec.queueInputBuffer(
-                                inputIndex,
-                                0,
-                                0,
-                                0,
-                                MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                                inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM
                             )
                             inputDone = true
                         } else {
                             codec.queueInputBuffer(
-                                inputIndex,
-                                0,
-                                sampleSize,
-                                extractor.sampleTime,
-                                0
+                                inputIndex, 0, sampleSize, extractor.sampleTime, 0
                             )
                             extractor.advance()
                         }
@@ -291,13 +178,10 @@ class LocalTranscriber @Inject constructor(
                 val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10_000)
                 when {
                     outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                        val decodedFormat = codec.outputFormat
-                        if (decodedFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                            sampleRate = decodedFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        }
-                        if (decodedFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                            channels = decodedFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
-                        }
+                        val decoded = codec.outputFormat
+                        sampleRate = decoded.intOrDefault(MediaFormat.KEY_SAMPLE_RATE, sampleRate)
+                        channels = decoded.intOrDefault(MediaFormat.KEY_CHANNEL_COUNT, channels)
+                        encoding = decoded.intOrDefault(MediaFormat.KEY_PCM_ENCODING, encoding)
                     }
                     outputIndex >= 0 -> {
                         codec.getOutputBuffer(outputIndex)?.let { buffer ->
@@ -315,9 +199,7 @@ class LocalTranscriber @Inject constructor(
                 }
             }
 
-            val bytes = output.toByteArray()
-            if (bytes.isEmpty()) throw IOException("Le fichier audio ne contient aucun échantillon exploitable.")
-            return PcmAudio(bytes, sampleRate, channels)
+            return PcmAudio(output.toByteArray(), sampleRate, channels, encoding)
         } finally {
             runCatching { codec?.stop() }
             runCatching { codec?.release() }
@@ -329,6 +211,15 @@ class LocalTranscriber @Inject constructor(
     private data class PcmAudio(
         val bytes: ByteArray,
         val sampleRate: Int,
-        val channels: Int
+        val channels: Int,
+        val encoding: Int
     )
+
+    private companion object {
+        const val MODEL_ASSET = "models/ggml-tiny-q5_1.bin"
+        const val TARGET_SAMPLE_RATE = 16_000
+    }
 }
+
+private fun MediaFormat.intOrDefault(key: String, default: Int): Int =
+    if (containsKey(key)) getInteger(key) else default
