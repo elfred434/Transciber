@@ -1,18 +1,13 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
-import fs from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import express, { type Request, type Response, type NextFunction } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
-import multer from 'multer';
 import { GoogleGenAI } from '@google/genai';
 
 const port = Number(process.env.PORT ?? 8787);
 const apiKey = process.env.GEMINI_API_KEY;
 const clientToken = process.env.GATEWAY_CLIENT_TOKEN;
-const maxAudioBytes = Number(process.env.MAX_AUDIO_MB ?? 25) * 1024 * 1024;
 
 if (!apiKey) {
   console.warn('GEMINI_API_KEY is not set. The gateway will start but AI requests will fail.');
@@ -25,12 +20,11 @@ app.use(helmet());
 app.use(express.json({ limit: '256kb' }));
 app.use(rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false }));
 
-const upload = multer({
-  dest: path.join(os.tmpdir(), 'transciber'),
-  limits: { fileSize: maxAudioBytes },
-});
-
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'transciber-gemini-gateway' }));
+app.get('/health', (_req, res) => res.json({
+  ok: true,
+  service: 'transciber-gemini-gateway',
+  capabilities: { transcription: 'device', translation: 'gemini', summary: 'gemini' },
+}));
 
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (!clientToken || req.path === '/health') return next();
@@ -94,47 +88,9 @@ ${text}
   }
 });
 
-app.post('/v1/transcribe', upload.single('audio'), async (req, res) => {
-  const file = req.file;
-  if (!file) return res.status(400).json({ error: 'Le fichier audio est obligatoire.' });
-  try {
-    const result = await transcribeFile(file.path, file.mimetype || String(req.body?.mimeType ?? 'audio/ogg'));
-    const parsed = parseJson(result);
-    return res.json({
-      text: String(parsed.text ?? result).trim(),
-      sourceLanguage: String(parsed.sourceLanguage ?? 'auto'),
-      requestId: crypto.randomUUID(),
-    });
-  } catch (error) {
-    return sendError(res, error);
-  } finally {
-    await fs.rm(file.path, { force: true }).catch(() => undefined);
-  }
-});
-
 async function generateText(prompt: string, model: string): Promise<string> {
   if (!gemini) throw new Error('Le serveur Gemini n’est pas configuré.');
   const response = await gemini.models.generateContent({ model, contents: prompt });
-  return response.text?.trim() ?? '';
-}
-
-async function transcribeFile(filePath: string, mimeType: string): Promise<string> {
-  if (!gemini) throw new Error('Le serveur Gemini n’est pas configuré.');
-  const uploaded = await gemini.files.upload({ file: filePath, config: { mimeType } });
-  const response = await gemini.models.generateContent({
-    model: process.env.GEMINI_AUDIO_MODEL ?? 'gemini-3.5-flash',
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { fileData: { fileUri: uploaded.uri, mimeType: uploaded.mimeType ?? mimeType } },
-          {
-            text: 'Transcris fidèlement cet audio. Retourne uniquement un objet JSON valide avec les clés "text" et "sourceLanguage". Ne résume pas et ne traduis pas.',
-          },
-        ],
-      },
-    ],
-  });
   return response.text?.trim() ?? '';
 }
 

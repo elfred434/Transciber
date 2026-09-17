@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.elfred434.transciber.data.GatewayClient
 import com.elfred434.transciber.data.HistoryDao
+import com.elfred434.transciber.data.LocalTranscriber
 import com.elfred434.transciber.data.HistoryEntity
 import com.elfred434.transciber.data.SettingsStore
 import com.elfred434.transciber.domain.AppSettings
@@ -28,6 +29,7 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class MainViewModel @Inject constructor(
     private val gatewayClient: GatewayClient,
+    private val localTranscriber: LocalTranscriber,
     private val historyDao: HistoryDao,
     private val settingsStore: SettingsStore,
     @ApplicationContext private val context: Context
@@ -177,7 +179,7 @@ class MainViewModel @Inject constructor(
         val uri = _state.value.audioUri ?: return showError("Sélectionnez d'abord un message vocal.")
         viewModelScope.launch {
             setStatus(ProcessingStatus.TRANSCRIBING)
-            runCatching { gatewayClient.transcribe(uri) }
+            runCatching { localTranscriber.transcribe(uri) }
                 .onSuccess { text ->
                     _state.value = _state.value.copy(
                         transcript = text,
@@ -298,7 +300,7 @@ class MainViewModel @Inject constructor(
         _state.value = _state.value.copy(status = status, errorMessage = null)
     }
 
-    private fun showError(message: String) {
+    fun showError(message: String) {
         _state.value = _state.value.copy(status = ProcessingStatus.ERROR, errorMessage = message)
     }
 

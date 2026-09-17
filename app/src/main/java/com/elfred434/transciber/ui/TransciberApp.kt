@@ -1,6 +1,8 @@
 package com.elfred434.transciber.ui
 
-import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -70,6 +72,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.elfred434.transciber.domain.HistoryItem
 import com.elfred434.transciber.domain.MainUiState
 import com.elfred434.transciber.domain.ProcessingStatus
@@ -92,6 +95,21 @@ fun TransciberApp(viewModel: MainViewModel) {
             )
         }
         viewModel.acceptAudio(uri)
+    }
+    val microphonePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) viewModel.transcribe()
+        else viewModel.showError("L'autorisation audio est nécessaire pour la reconnaissance hors ligne.")
+    }
+    val startTranscription = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) {
+            microphonePermission.launch(Manifest.permission.RECORD_AUDIO)
+        } else {
+            viewModel.transcribe()
+        }
     }
 
     Scaffold(
@@ -127,6 +145,7 @@ fun TransciberApp(viewModel: MainViewModel) {
                 state = state,
                 viewModel = viewModel,
                 onPickAudio = { picker.launch(arrayOf("audio/*")) },
+                onTranscribe = startTranscription,
                 modifier = Modifier.padding(padding)
             )
             AppTab.HISTORY -> HistoryScreen(
@@ -148,6 +167,7 @@ private fun HomeScreen(
     state: MainUiState,
     viewModel: MainViewModel,
     onPickAudio: () -> Unit,
+    onTranscribe: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -183,12 +203,12 @@ private fun HomeScreen(
                 Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Transformez un vocal en texte.", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        "Partagez un message vocal depuis WhatsApp, traduisez-le avec Gemini et gardez une trace claire de l’essentiel.",
+                        "Le vocal est transcrit sur cet appareil, même hors ligne. Seule la traduction ou le résumé utilisent votre gateway Gemini.",
                         color = Color(0xFFC6DED0), lineHeight = 21.sp
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         Surface(shape = RoundedCornerShape(50), color = Color(0xFFB9F2D5)) {
-                            Text("Gemini ready", Modifier.padding(horizontal = 13.dp, vertical = 7.dp), color = Color(0xFF112822), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Text("Hors ligne", Modifier.padding(horizontal = 13.dp, vertical = 7.dp), color = Color(0xFF112822), fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         }
                         Surface(shape = RoundedCornerShape(50), color = Color(0xFF2A4439)) {
                             Text("Privé par défaut", Modifier.padding(horizontal = 13.dp, vertical = 7.dp), color = Color(0xFFC6DED0), fontSize = 12.sp)
@@ -258,7 +278,7 @@ private fun HomeScreen(
         } else if (state.audioUri != null) {
             item {
                 Button(
-                    onClick = viewModel::transcribe,
+                    onClick = onTranscribe,
                     modifier = Modifier.fillMaxWidth(),
                     enabled = state.status != ProcessingStatus.TRANSCRIBING
                 ) {
