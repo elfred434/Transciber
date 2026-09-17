@@ -218,7 +218,7 @@ class MainViewModel @Inject constructor(
         viewModelScope.launch {
             setStatus(ProcessingStatus.SUMMARIZING)
             runCatching {
-                gatewayClient.summarize(text, _state.value.settings.targetLanguage)
+                summarizeLocally(text)
             }.onSuccess { summary ->
                 _state.value = _state.value.copy(
                     summary = summary,
@@ -266,6 +266,18 @@ class MainViewModel @Inject constructor(
         context.startActivity(Intent.createChooser(intent, "Partager le résultat").apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         })
+    }
+
+    private fun summarizeLocally(text: String): String {
+        val normalized = text.trim().replace(Regex("\\s+"), " ")
+        val sentences = normalized
+            .split(Regex("(?<=[.!?])\\s+"))
+            .map(String::trim)
+            .filter(String::isNotBlank)
+        return when {
+            sentences.size <= 3 -> normalized
+            else -> sentences.take(3).joinToString(" ") + " …"
+        }
     }
 
     private suspend fun maybeSave() {

@@ -23,7 +23,7 @@ app.use(rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHe
 app.get('/health', (_req, res) => res.json({
   ok: true,
   service: 'transciber-gemini-gateway',
-  capabilities: { transcription: 'device', translation: 'gemini', summary: 'gemini' },
+  capabilities: { transcription: 'device', translation: 'gemini', summary: 'device' },
 }));
 
 app.use((req: Request, res: Response, next: NextFunction) => {
@@ -60,29 +60,6 @@ ${text}
       targetLanguage,
       requestId: crypto.randomUUID(),
     });
-  } catch (error) {
-    return sendError(res, error);
-  }
-});
-
-app.post('/v1/summarize', async (req, res) => {
-  try {
-    const text = String(req.body?.text ?? '').trim();
-    const language = String(req.body?.language ?? 'Français').trim();
-    if (!text) return res.status(400).json({ error: 'Le texte à résumer est obligatoire.' });
-
-    const result = await generateText(`
-Tu es le moteur de résumé de l'application Transciber.
-Résume le texte suivant en ${language}.
-Retourne uniquement un objet JSON valide avec la clé "summary".
-Le résumé doit être court, fidèle et utile. Conserve les noms, dates et actions importantes.
-
-Texte :
-${text}
-`, process.env.GEMINI_TRANSLATION_MODEL ?? 'gemini-3.1-flash-lite');
-
-    const parsed = parseJson(result);
-    return res.json({ summary: String(parsed.summary ?? result).trim(), requestId: crypto.randomUUID() });
   } catch (error) {
     return sendError(res, error);
   }

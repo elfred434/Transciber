@@ -203,7 +203,7 @@ private fun HomeScreen(
                 Column(Modifier.padding(22.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Transformez un vocal en texte.", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        "Le vocal est transcrit sur cet appareil, même hors ligne. Seule la traduction ou le résumé utilisent votre gateway Gemini.",
+                        "Le vocal est transcrit et résumé sur cet appareil, même hors ligne. Seule la traduction utilise votre gateway Gemini.",
                         color = Color(0xFFC6DED0), lineHeight = 21.sp
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -303,7 +303,7 @@ private fun HomeScreen(
         if (state.summary.isNotBlank()) {
             item {
                 ResultCard(
-                    title = "Résumé Gemini",
+                    title = "Résumé local",
                     icon = { Icon(Icons.Default.Settings, null) },
                     text = state.summary,
                     tint = Color(0xFFFFF0E9),

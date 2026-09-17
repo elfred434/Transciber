@@ -35,18 +35,6 @@ class GatewayClient @Inject constructor(
                 ?: throw IOException(response.optString("error", "La traduction est vide."))
         }
 
-    suspend fun summarize(text: String, language: String): String = withContext(Dispatchers.IO) {
-        val settings = settings()
-        val body = JSONObject()
-            .put("text", text)
-            .put("language", language)
-            .toString()
-            .toRequestBody("application/json".toMediaType())
-        val response = execute("v1/summarize", settings, body)
-        response.optString("summary").takeIf { it.isNotBlank() }
-            ?: throw IOException(response.optString("error", "Le résumé est vide."))
-    }
-
     private fun execute(path: String, settings: AppSettings, body: RequestBody): JSONObject {
         val rawBase = settings.gatewayUrl.trim()
         if (rawBase.isBlank()) {
