@@ -61,6 +61,7 @@ class LocalTranscriber @Inject constructor(
                 fun cleanup() {
                     writer?.cancel()
                     runCatching { input.close() }
+                    runCatching { output.close() }
                     runCatching { recognizer.destroy() }
                 }
 
@@ -120,7 +121,6 @@ class LocalTranscriber @Inject constructor(
                     putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_CHANNEL_COUNT, audio.channels)
                     putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_ENCODING, AudioFormat.ENCODING_PCM_16BIT)
                     putExtra(RecognizerIntent.EXTRA_AUDIO_SOURCE_SAMPLING_RATE, audio.sampleRate)
-                    putExtra(RecognizerIntent.EXTRA_SEGMENTED_SESSION, RecognizerIntent.EXTRA_AUDIO_SOURCE)
                 }
 
                 continuation.invokeOnCancellation {
